@@ -15,10 +15,34 @@ static BOOL rdp_client_pre_connect(freerdp* instance)
     return TRUE;
 }
 
+static BOOL rdp_client_begin_paint(rdpContext* context)
+{
+    WINPR_UNUSED(context);
+    return TRUE;
+}
+
+static BOOL rdp_client_end_paint(rdpContext* context)
+{
+    RDPClient* client = (RDPClient*)context;
+    
+    // Mark that we've received at least one frame
+    if (client) {
+        client->first_frame_received = TRUE;
+    }
+    
+    return TRUE;
+}
+
 static BOOL rdp_client_post_connect(freerdp* instance)
 {
     if (!gdi_init(instance, PIXEL_FORMAT_RGBX32))
         return FALSE;
+    
+    rdpUpdate* update = instance->context->update;
+    if (update) {
+        update->BeginPaint = rdp_client_begin_paint;
+        update->EndPaint = rdp_client_end_paint;
+    }
         
     return TRUE;
 }
@@ -93,6 +117,7 @@ RDPClient* rdp_client_new(void)
     client->instance->VerifyCertificateEx = rdp_client_verify_certificate;
     
     client->connected = FALSE;
+    client->first_frame_received = FALSE;
     client->port = 3389;
     
     return client;

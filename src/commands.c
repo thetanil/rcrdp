@@ -55,8 +55,9 @@ static BOOL write_png_file(const char* filename, BYTE* buffer, UINT32 width, UIN
         for (UINT32 x = 0; x < width; x++)
         {
             UINT32 pixel = ((UINT32*)src_line)[x];
+            // For PIXEL_FORMAT_RGBX32, the format is typically BGRX in memory
             row_pointers[y][x * 3 + 0] = (pixel >> 16) & 0xFF; // R
-            row_pointers[y][x * 3 + 1] = (pixel >> 8) & 0xFF;  // G
+            row_pointers[y][x * 3 + 1] = (pixel >> 8) & 0xFF;  // G  
             row_pointers[y][x * 3 + 2] = pixel & 0xFF;         // B
         }
     }
@@ -78,7 +79,18 @@ BOOL execute_screenshot(RDPClient* client, const char* output_file)
 {
     if (!client || !client->connected)
         return FALSE;
-        
+    
+    // Wait for desktop to be ready and process messages (500ms total)
+    for (int i = 0; i < 20; i++) { // 500ms total (5 x 100ms)
+        // Process pending messages
+        if (!freerdp_check_event_handles(client->instance->context)) {
+            break;
+        }
+        usleep(100000); // Sleep 100ms
+    }
+    
+    printf("Capturing screenshot...\n");
+    
     rdpGdi* gdi = client->instance->context->gdi;
     if (!gdi || !gdi->primary_buffer)
     {

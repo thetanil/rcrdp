@@ -248,14 +248,7 @@ int main(int argc, char** argv)
                 goto cleanup;
             }
             
-            // Wait a moment for connection to stabilize
-            usleep(1000000);
-            
-            // For screenshot commands, wait longer for desktop to load
-            if (config.command.type == CMD_SCREENSHOT) {
-                printf("Waiting for desktop to load...\n");
-                sleep(8);  // Increased wait time
-            }
+
             
             ret = execute_command(client, &config);
             

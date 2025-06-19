@@ -11,6 +11,7 @@ typedef struct {
     freerdp* instance;
     rdpContext* context;
     BOOL connected;
+    BOOL first_frame_received;
     char* hostname;
     int port;
     char* username;
