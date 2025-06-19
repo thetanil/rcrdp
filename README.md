@@ -1,17 +1,17 @@
 # rcrdp
 Remote Control RDP
 
-A CLI tool built with FreeRDP library for remote desktop automation. Supports screenshot capture, keyboard input, and mouse control without requiring an interactive display or GUI window.
+A persistent HTTP REST server built with FreeRDP library for remote desktop automation. Maintains a persistent RDP connection and exposes screenshot capture, keyboard input, and mouse control via simple HTTP endpoints.
 
 ## Features
 
-- **Core RDP Connection**: Uses FreeRDP 3.x library for establishing RDP connections
-- **CLI Interface**: Full command-line interface with argument parsing
-- **Screenshot Command**: Captures screen and saves as PNG format with auto-generated ISO timestamps
-- **SendKey Command**: Uses `freerdp_input_send_keyboard_event` for keyboard input
-- **SendMouse Command**: Uses `freerdp_input_send_mouse_event` for mouse clicks  
-- **MoveMouse Command**: Uses `freerdp_input_send_mouse_event` for mouse movement
+- **Persistent RDP Connection**: Establishes a single RDP connection at startup and maintains it throughout the server lifetime
+- **HTTP REST API**: Simple HTTP/1.1 server with JSON/binary endpoints - no authentication, compression, or extra features
+- **Screenshot Endpoint**: Captures screen and returns PNG data via HTTP with automatic black pixel detection and retry logic
+- **Keyboard Input**: Uses `freerdp_input_send_keyboard_event` via JSON POST requests
+- **Mouse Control**: Uses `freerdp_input_send_mouse_event` for clicks and movement via JSON POST requests
 - **Headless Operation**: No GUI or interactive display required
+- **Performance Optimized**: No connect/disconnect overhead per operation - maintains persistent session
 
 ## Building
 
