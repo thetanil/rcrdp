@@ -168,7 +168,7 @@ static int execute_command(RDPClient* client, const Config* config)
             break;
             
         case CMD_SCREENSHOT:
-            if (!execute_screenshot(client, config->command.params.screenshot.output_file))
+            if (!request_screenshot(client, config->command.params.screenshot.output_file))
             {
                 return -1;
             }

@@ -4,9 +4,54 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <freerdp3/freerdp/input.h>
 #include <freerdp3/freerdp/gdi/gdi.h>
 #include <png.h>
+
+static BOOL is_image_all_black(BYTE* buffer, UINT32 width, UINT32 height, UINT32 stride)
+{
+    // Check a sampling of pixels to see if image is all black
+    // We'll check every 16th pixel for performance
+    UINT32 non_black_pixels = 0;
+    UINT32 pixels_checked = 0;
+    UINT32 significant_pixels = 0; // Pixels with meaningful color content
+    
+    for (UINT32 y = 0; y < height; y += 16) {
+        BYTE* src_line = buffer + y * stride;
+        for (UINT32 x = 0; x < width; x += 16) {
+            UINT32 pixel = ((UINT32*)src_line)[x];
+            // Extract RGB components (format is BGRX)
+            UINT32 r = (pixel >> 16) & 0xFF;
+            UINT32 g = (pixel >> 8) & 0xFF;
+            UINT32 b = pixel & 0xFF;
+            
+            if (r > 5 || g > 5 || b > 5) { // Very low threshold for non-black
+                non_black_pixels++;
+                
+                // Count pixels with significant color (not just noise)
+                if (r > 30 || g > 30 || b > 30) {
+                    significant_pixels++;
+                }
+            }
+            pixels_checked++;
+            
+            // Early exit if we find enough significant pixels
+            if (significant_pixels > 5) {
+                return FALSE;
+            }
+        }
+    }
+    
+    // Optional debug output (commented out for normal operation)
+    // printf("DEBUG: Pixel analysis - %d/%d non-black, %d significant (%.1f%% non-black)\n", 
+    //        non_black_pixels, pixels_checked, significant_pixels, 
+    //        (float)(non_black_pixels * 100) / pixels_checked);
+    
+    // Consider image "all black" if less than 5% of sampled pixels are non-black
+    // AND there are fewer than 3 significant pixels
+    return (non_black_pixels * 100 / pixels_checked) < 5 && significant_pixels < 3;
+}
 
 static BOOL write_png_file(const char* filename, BYTE* buffer, UINT32 width, UINT32 height, UINT32 stride)
 {
@@ -75,33 +120,97 @@ static BOOL write_png_file(const char* filename, BYTE* buffer, UINT32 width, UIN
     return TRUE;
 }
 
-BOOL execute_screenshot(RDPClient* client, const char* output_file)
+BOOL request_screenshot(RDPClient* client, const char* output_file)
 {
     if (!client || !client->connected)
         return FALSE;
     
-    // Wait for desktop to be ready and process messages (500ms total)
-    for (int i = 0; i < 20; i++) { // 500ms total (5 x 100ms)
-        // Process pending messages
-        if (!freerdp_check_event_handles(client->instance->context)) {
+    // Store the filename for the callback
+    if (client->screenshot_filename) {
+        free(client->screenshot_filename);
+    }
+    client->screenshot_filename = output_file ? strdup(output_file) : NULL;
+    
+    // Request screenshot to be taken on next EndPaint
+    client->screenshot_requested = TRUE;
+    client->screenshot_retry_count = 0;
+    
+    printf("Screenshot requested, waiting for next frame...\n");
+    
+    // Trigger desktop activity to wake up screen and ensure content is loaded
+    rdpInput* input = client->context->context.input;
+    if (input) {
+        // Send mouse movement to wake up any screen saver
+        freerdp_input_send_mouse_event(input, PTR_FLAGS_MOVE, 100, 100);
+        freerdp_input_send_mouse_event(input, PTR_FLAGS_MOVE, 0, 0);
+        
+        // Send a harmless key (Ctrl) to wake up desktop
+        freerdp_input_send_keyboard_event(input, KBD_FLAGS_DOWN, 0x1D); // Ctrl down
+        usleep(50000); // 50ms
+        freerdp_input_send_keyboard_event(input, KBD_FLAGS_RELEASE, 0x1D); // Ctrl up
+    }
+    
+    // Give desktop a moment to respond to wake-up triggers
+    usleep(500000); // 500ms initial delay
+    
+    // Process messages until screenshot is taken (or max retries reached)
+    int timeout = 200; // 20 seconds max to account for retries
+    while (client->screenshot_requested && timeout > 0) {
+        if (!freerdp_check_event_handles(&client->context->context)) {
             break;
         }
-        usleep(100000); // Sleep 100ms
+        usleep(100000); // 100ms
+        timeout--;
+        
+        // Send another small trigger every 2 seconds to encourage redraws
+        if (timeout % 20 == 0 && input) {
+            freerdp_input_send_mouse_event(input, PTR_FLAGS_MOVE, 1, 1);
+            freerdp_input_send_mouse_event(input, PTR_FLAGS_MOVE, 0, 0);
+        }
     }
+    
+    if (client->screenshot_requested) {
+        printf("Timeout waiting for frame, taking screenshot now...\n");
+        client->screenshot_requested = FALSE;
+        client->screenshot_retry_count = 0; // Reset retry count
+        ScreenshotResult result = execute_screenshot(client, output_file);
+        return (result == SCREENSHOT_SUCCESS);
+    }
+    
+    return TRUE;
+}
+
+ScreenshotResult execute_screenshot(RDPClient* client, const char* output_file)
+{
+    if (!client || !client->connected)
+        return SCREENSHOT_ERROR;
     
     printf("Capturing screenshot...\n");
     
-    rdpGdi* gdi = client->instance->context->gdi;
+    rdpGdi* gdi = client->context->context.gdi;
     if (!gdi || !gdi->primary_buffer)
     {
         fprintf(stderr, "No graphics buffer available for screenshot\n");
-        return FALSE;
+        return SCREENSHOT_ERROR;
     }
     
     UINT32 width = gdi->width;
     UINT32 height = gdi->height;
     UINT32 stride = gdi->stride;
     BYTE* buffer = gdi->primary_buffer;
+    
+    // Check if image is all black pixels and retry if needed
+    if (is_image_all_black(buffer, width, height, stride)) {
+        if (client->screenshot_retry_count < MAX_SCREENSHOT_RETRIES - 1) {
+            printf("Screenshot appears to be black pixels, retrying (%d/%d)...\n", 
+                   client->screenshot_retry_count + 1, MAX_SCREENSHOT_RETRIES);
+            return SCREENSHOT_BLACK;
+        } else {
+            printf("Screenshot still appears black after %d retries, saving anyway...\n", 
+                   MAX_SCREENSHOT_RETRIES);
+            // Continue with saving the black screenshot
+        }
+    }
     
     char filename[512];
     if (output_file)
@@ -130,11 +239,11 @@ BOOL execute_screenshot(RDPClient* client, const char* output_file)
     if (!write_png_file(filename, buffer, width, height, stride))
     {
         fprintf(stderr, "Failed to write PNG file: %s\n", filename);
-        return FALSE;
+        return SCREENSHOT_ERROR;
     }
     
     printf("Screenshot saved to %s (%ux%u)\n", filename, width, height);
-    return TRUE;
+    return SCREENSHOT_SUCCESS;
 }
 
 BOOL execute_sendkey(RDPClient* client, DWORD flags, DWORD code)
@@ -142,7 +251,7 @@ BOOL execute_sendkey(RDPClient* client, DWORD flags, DWORD code)
     if (!client || !client->connected)
         return FALSE;
         
-    rdpInput* input = client->instance->context->input;
+    rdpInput* input = client->context->context.input;
     if (!input)
         return FALSE;
         
@@ -161,7 +270,7 @@ BOOL execute_sendmouse(RDPClient* client, DWORD flags, UINT16 x, UINT16 y)
     if (!client || !client->connected)
         return FALSE;
         
-    rdpInput* input = client->instance->context->input;
+    rdpInput* input = client->context->context.input;
     if (!input)
         return FALSE;
         
@@ -180,7 +289,7 @@ BOOL execute_movemouse(RDPClient* client, UINT16 x, UINT16 y)
     if (!client || !client->connected)
         return FALSE;
         
-    rdpInput* input = client->instance->context->input;
+    rdpInput* input = client->context->context.input;
     if (!input)
         return FALSE;
         

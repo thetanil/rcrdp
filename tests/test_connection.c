@@ -157,7 +157,7 @@ static int test_screenshot(void)
     printf("PASS: Connected for screenshot test\n");
     
     // Test auto-generated filename
-    if (!execute_screenshot(client, NULL)) {
+    if (!request_screenshot(client, NULL)) {
         printf("FAIL: Auto-generated screenshot failed\n");
         rdp_client_disconnect(client);
         rdp_client_free(client);
@@ -167,7 +167,7 @@ static int test_screenshot(void)
     printf("PASS: Auto-generated screenshot succeeded\n");
     
     // Test custom filename
-    if (!execute_screenshot(client, "test_screenshot.png")) {
+    if (!request_screenshot(client, "test_screenshot.png")) {
         printf("FAIL: Custom filename screenshot failed\n");
         rdp_client_disconnect(client);
         rdp_client_free(client);

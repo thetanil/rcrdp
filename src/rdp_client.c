@@ -23,11 +23,46 @@ static BOOL rdp_client_begin_paint(rdpContext* context)
 
 static BOOL rdp_client_end_paint(rdpContext* context)
 {
-    RDPClient* client = (RDPClient*)context;
+    RDPContext* ctx = (RDPContext*)context;
+    RDPClient* client = ctx->client;
     
     // Mark that we've received at least one frame
     if (client) {
         client->first_frame_received = TRUE;
+        
+        // If a screenshot was requested, take it now
+        if (client->screenshot_requested) {
+            ScreenshotResult result = execute_screenshot(client, client->screenshot_filename);
+            
+            if (result == SCREENSHOT_BLACK && client->screenshot_retry_count < MAX_SCREENSHOT_RETRIES - 1) {
+                // Screenshot is black and we have retries left, try again
+                client->screenshot_retry_count++;
+                
+                // Send additional desktop wake-up triggers for retries
+                rdpInput* input = client->context->context.input;
+                if (input) {
+                    // Move mouse to different position to encourage screen updates
+                    freerdp_input_send_mouse_event(input, PTR_FLAGS_MOVE, 
+                                                 50 + (client->screenshot_retry_count * 20), 
+                                                 50 + (client->screenshot_retry_count * 20));
+                    usleep(100000); // 100ms
+                    freerdp_input_send_mouse_event(input, PTR_FLAGS_MOVE, 0, 0);
+                }
+                
+                // Don't clear screenshot_requested, let it try again on next EndPaint
+                return TRUE;
+            }
+            
+            // Either success, error, or max retries reached - finish the request
+            client->screenshot_requested = FALSE;
+            client->screenshot_retry_count = 0;
+            
+            // Clean up filename
+            if (client->screenshot_filename) {
+                free(client->screenshot_filename);
+                client->screenshot_filename = NULL;
+            }
+        }
     }
     
     return TRUE;
@@ -101,6 +136,9 @@ RDPClient* rdp_client_new(void)
         return NULL;
     }
     
+    // Set the context size to our extended context
+    client->instance->ContextSize = sizeof(RDPContext);
+    
     if (!freerdp_context_new(client->instance))
     {
         freerdp_free(client->instance);
@@ -108,7 +146,8 @@ RDPClient* rdp_client_new(void)
         return NULL;
     }
     
-    client->context = client->instance->context;
+    client->context = (RDPContext*)client->instance->context;
+    client->context->client = client;
     
     client->instance->PreConnect = rdp_client_pre_connect;
     client->instance->PostConnect = rdp_client_post_connect;
@@ -118,6 +157,9 @@ RDPClient* rdp_client_new(void)
     
     client->connected = FALSE;
     client->first_frame_received = FALSE;
+    client->screenshot_requested = FALSE;
+    client->screenshot_filename = NULL;
+    client->screenshot_retry_count = 0;
     client->port = 3389;
     
     return client;
@@ -139,6 +181,8 @@ void rdp_client_free(RDPClient* client)
         free(client->password);
     if (client->domain)
         free(client->domain);
+    if (client->screenshot_filename)
+        free(client->screenshot_filename);
         
     if (client->instance)
     {
@@ -155,7 +199,7 @@ BOOL rdp_client_connect(RDPClient* client, const char* hostname, int port,
     if (!client || !hostname)
         return FALSE;
         
-    rdpSettings* settings = client->instance->context->settings;
+    rdpSettings* settings = client->context->context.settings;
     
     client->hostname = _strdup(hostname);
     client->port = port;
