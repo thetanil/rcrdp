@@ -245,7 +245,7 @@ static HttpResponse* route_request(HttpServer* server, HttpRequest* request)
         return create_http_response(500, "text/plain", "Server error", 12, 0);
     
     if (request->method == HTTP_GET) {
-        if (strcmp(request->path, "/screen") == 0) {
+        if (strncmp(request->path, "/screen", 7) == 0) {
             return handle_get_screen(server->rdp_client);
         } else if (strcmp(request->path, "/status") == 0) {
             return handle_get_status(server->rdp_client);

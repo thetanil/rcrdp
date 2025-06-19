@@ -78,8 +78,11 @@ Server options:
 # Save current screenshot to file
 curl http://localhost:8080/screen > screenshot.png
 
-# Get screenshot with wget
+# Get screenshot with wget  
 wget -O screenshot.png http://localhost:8080/screen
+
+# Note: Mouse cursor may not be visible in screenshots as it's often rendered client-side
+# However, mouse input events work correctly and produce visible UI responses
 ```
 
 #### Get Connection Status
@@ -114,21 +117,35 @@ curl -X POST -d '{"flags":2,"code":17}' http://localhost:8080/sendkey  # Ctrl up
 # Move mouse to coordinates (100, 200)
 curl -X POST -d '{"x":100,"y":200}' http://localhost:8080/movemouse
 
-# Left click at current position
-curl -X POST -d '{"flags":4096,"x":100,"y":200}' http://localhost:8080/sendmouse
+# Left click at coordinates (100, 200)
+curl -X POST -d '{"flags":36864,"x":100,"y":200}' http://localhost:8080/sendmouse
 
-# Right click at coordinates (300, 400)
-curl -X POST -d '{"flags":8192,"x":300,"y":400}' http://localhost:8080/sendmouse
+# Right click at coordinates (300, 400) - opens context menu and may auto-select first item
+curl -X POST -d '{"flags":40960,"x":300,"y":400}' http://localhost:8080/sendmouse
 
-# Double click
-curl -X POST -d '{"flags":4096,"x":100,"y":200}' http://localhost:8080/sendmouse
-curl -X POST -d '{"flags":4096,"x":100,"y":200}' http://localhost:8080/sendmouse
+# Middle click at coordinates (500, 300)
+curl -X POST -d '{"flags":49152,"x":500,"y":300}' http://localhost:8080/sendmouse
+
+# Double click (send two left clicks in quick succession)
+curl -X POST -d '{"flags":36864,"x":100,"y":200}' http://localhost:8080/sendmouse
+curl -X POST -d '{"flags":36864,"x":100,"y":200}' http://localhost:8080/sendmouse
 ```
 
-#### Common Mouse Flags
-- `4096` (0x1000) - Left button click
-- `8192` (0x2000) - Right button click
-- `16384` (0x4000) - Middle button click
+#### Mouse Button Flags
+**Single button DOWN events work best for this RDP implementation:**
+- **Left click**: `36864` (0x1000 + 0x8000 = 0x9000)
+- **Right click**: `40960` (0x2000 + 0x8000 = 0xA000)  
+- **Middle click**: `49152` (0x4000 + 0x8000 = 0xC000)
+
+**Note**: Right-click events work correctly but context menus may appear and auto-select the first item very quickly. This is normal RDP behavior - the menu does appear, but it may be dismissed rapidly if no follow-up interaction occurs.
+
+**Note**: Mouse cursor may not be visible in screenshots as it's often rendered client-side, but input events work correctly as evidenced by UI responses (menus, selections, etc.)
+
+#### Coordinate System
+- **Desktop Resolution**: 1024x768 pixels (set at connection time)
+- **Origin**: Top-left corner at (0,0)
+- **Valid Range**: x: 0-1023, y: 0-767
+- **Coordinates**: Absolute pixel positions on the remote desktop
 
 #### Common Key Codes
 - `13` - Enter

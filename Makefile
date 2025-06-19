@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -O2 -D_GNU_SOURCE
 INCLUDES = -Iinclude -I/usr/include/freerdp3 -I/usr/include/winpr3
-LDFLAGS = -lfreerdp3 -lfreerdp-client3 -lwinpr3 -lpng
+LDFLAGS = -lfreerdp3 -lfreerdp-client3 -lwinpr3 -lpng -lpthread
 
 SRCDIR = src
 INCDIR = include

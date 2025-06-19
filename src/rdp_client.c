@@ -26,43 +26,16 @@ static BOOL rdp_client_end_paint(rdpContext* context)
     RDPContext* ctx = (RDPContext*)context;
     RDPClient* client = ctx->client;
     
+    if (!client)
+        return TRUE;
+    
     // Mark that we've received at least one frame
-    if (client) {
-        client->first_frame_received = TRUE;
-        
-        // If a screenshot was requested, take it now
-        if (client->screenshot_requested) {
-            ScreenshotResult result = execute_screenshot(client, client->screenshot_filename);
-            
-            if (result == SCREENSHOT_BLACK && client->screenshot_retry_count < MAX_SCREENSHOT_RETRIES - 1) {
-                // Screenshot is black and we have retries left, try again
-                client->screenshot_retry_count++;
-                
-                // Send additional desktop wake-up triggers for retries
-                rdpInput* input = client->context->context.input;
-                if (input) {
-                    // Move mouse to different position to encourage screen updates
-                    freerdp_input_send_mouse_event(input, PTR_FLAGS_MOVE, 
-                                                 50 + (client->screenshot_retry_count * 20), 
-                                                 50 + (client->screenshot_retry_count * 20));
-                    usleep(100000); // 100ms
-                    freerdp_input_send_mouse_event(input, PTR_FLAGS_MOVE, 0, 0);
-                }
-                
-                // Don't clear screenshot_requested, let it try again on next EndPaint
-                return TRUE;
-            }
-            
-            // Either success, error, or max retries reached - finish the request
-            client->screenshot_requested = FALSE;
-            client->screenshot_retry_count = 0;
-            
-            // Clean up filename
-            if (client->screenshot_filename) {
-                free(client->screenshot_filename);
-                client->screenshot_filename = NULL;
-            }
-        }
+    client->first_frame_received = TRUE;
+    
+    // Copy current frame to latest frame buffer for non-blocking screenshots
+    rdpGdi* gdi = context->gdi;
+    if (gdi && gdi->primary_buffer) {
+        copy_frame_buffer(client, gdi->primary_buffer, gdi->width, gdi->height, gdi->stride);
     }
     
     return TRUE;
@@ -128,10 +101,13 @@ RDPClient* rdp_client_new(void)
     
     // Set quieter logging to reduce noise from FreeRDP warnings
     WLog_SetLogLevel(WLog_GetRoot(), WLOG_FATAL);
-        
+    
+    // Initialize using the proper FreeRDP client entry points pattern
+    // This follows the same approach as TestConnect.c for better compatibility
     client->instance = freerdp_new();
     if (!client->instance)
     {
+        fprintf(stderr, "Failed to create FreeRDP instance\n");
         free(client);
         return NULL;
     }
@@ -139,22 +115,34 @@ RDPClient* rdp_client_new(void)
     // Set the context size to our extended context
     client->instance->ContextSize = sizeof(RDPContext);
     
+    // Create the context with proper error handling
     if (!freerdp_context_new(client->instance))
     {
+        fprintf(stderr, "Failed to create FreeRDP context\n");
         freerdp_free(client->instance);
         free(client);
         return NULL;
     }
     
+    // Cast to our extended context and set up the back-reference
     client->context = (RDPContext*)client->instance->context;
+    if (!client->context) {
+        fprintf(stderr, "Failed to get FreeRDP context\n");
+        freerdp_context_free(client->instance);
+        freerdp_free(client->instance);
+        free(client);
+        return NULL;
+    }
     client->context->client = client;
     
+    // Set up callback functions
     client->instance->PreConnect = rdp_client_pre_connect;
     client->instance->PostConnect = rdp_client_post_connect;
     client->instance->PostDisconnect = rdp_client_post_disconnect;
     client->instance->Authenticate = rdp_client_authenticate;
     client->instance->VerifyCertificateEx = rdp_client_verify_certificate;
     
+    // Initialize client state
     client->connected = FALSE;
     client->first_frame_received = FALSE;
     client->screenshot_requested = FALSE;
@@ -162,6 +150,24 @@ RDPClient* rdp_client_new(void)
     client->screenshot_retry_count = 0;
     client->port = 3389;
     
+    // Initialize threading components
+    client->thread_running = FALSE;
+    client->stop_requested = FALSE;
+    client->latest_frame_buffer = NULL;
+    client->latest_frame_width = 0;
+    client->latest_frame_height = 0;
+    client->latest_frame_stride = 0;
+    client->frame_updated = FALSE;
+    
+    if (pthread_mutex_init(&client->frame_mutex, NULL) != 0) {
+        fprintf(stderr, "Failed to initialize frame mutex\n");
+        freerdp_context_free(client->instance);
+        freerdp_free(client->instance);
+        free(client);
+        return NULL;
+    }
+    
+    printf("DEBUG: RDP client initialized successfully\n");
     return client;
 }
 
@@ -169,9 +175,21 @@ void rdp_client_free(RDPClient* client)
 {
     if (!client)
         return;
+    
+    // Stop event processing thread first
+    rdp_client_stop_event_thread(client);
         
     if (client->connected)
         rdp_client_disconnect(client);
+    
+    // Clean up frame buffer
+    pthread_mutex_lock(&client->frame_mutex);
+    if (client->latest_frame_buffer) {
+        free(client->latest_frame_buffer);
+        client->latest_frame_buffer = NULL;
+    }
+    pthread_mutex_unlock(&client->frame_mutex);
+    pthread_mutex_destroy(&client->frame_mutex);
         
     if (client->hostname)
         free(client->hostname);
@@ -235,6 +253,14 @@ BOOL rdp_client_connect(RDPClient* client, const char* hostname, int port,
     freerdp_settings_set_uint32(settings, FreeRDP_OffscreenSupportLevel, 1);
     freerdp_settings_set_bool(settings, FreeRDP_CompressionEnabled, TRUE);
     
+    // Connection timeout settings (similar to TestConnect.c)
+    freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 5000); // 5 seconds
+    freerdp_settings_set_uint32(settings, FreeRDP_TcpAckTimeout, 9000);     // 9 seconds
+    
+    // Mouse cursor settings - disable cursor effects that might hide cursor in screenshots
+    freerdp_settings_set_bool(settings, FreeRDP_DisableCursorShadow, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_DisableCursorBlinking, TRUE);
+    
     if (!freerdp_connect(client->instance))
     {
         fprintf(stderr, "Failed to connect to %s:%d\n", hostname, port);
@@ -243,6 +269,15 @@ BOOL rdp_client_connect(RDPClient* client, const char* hostname, int port,
     
     client->connected = TRUE;
     printf("Connected to %s:%d\n", hostname, port);
+    
+    // Start the event processing thread
+    if (!rdp_client_start_event_thread(client)) {
+        fprintf(stderr, "Failed to start event processing thread\n");
+        freerdp_disconnect(client->instance);
+        client->connected = FALSE;
+        return FALSE;
+    }
+    
     return TRUE;
 }
 
@@ -250,8 +285,153 @@ void rdp_client_disconnect(RDPClient* client)
 {
     if (!client || !client->connected)
         return;
+    
+    // Stop event processing thread first
+    rdp_client_stop_event_thread(client);
         
     freerdp_disconnect(client->instance);
     client->connected = FALSE;
     printf("Disconnected from %s:%d\n", client->hostname, client->port);
+}
+
+// Event processing thread functions
+BOOL rdp_client_start_event_thread(RDPClient* client)
+{
+    if (!client || client->thread_running)
+        return FALSE;
+    
+    client->stop_requested = FALSE;
+    
+    if (pthread_create(&client->event_thread, NULL, rdp_event_thread_proc, client) != 0) {
+        fprintf(stderr, "Failed to create event processing thread\n");
+        return FALSE;
+    }
+    
+    client->thread_running = TRUE;
+    printf("DEBUG: Event processing thread started\n");
+    return TRUE;
+}
+
+void rdp_client_stop_event_thread(RDPClient* client)
+{
+    if (!client || !client->thread_running)
+        return;
+    
+    printf("DEBUG: Stopping event processing thread...\n");
+    client->stop_requested = TRUE;
+    
+    // Wait for thread to finish
+    pthread_join(client->event_thread, NULL);
+    client->thread_running = FALSE;
+    printf("DEBUG: Event processing thread stopped\n");
+}
+
+void* rdp_event_thread_proc(void* arg)
+{
+    RDPClient* client = (RDPClient*)arg;
+    
+    if (!client || !client->instance) {
+        fprintf(stderr, "Invalid client in event thread\n");
+        return NULL;
+    }
+    
+    printf("DEBUG: Event processing thread running\n");
+    
+    while (!client->stop_requested && client->connected) {
+        // Get event handles for the RDP connection
+        HANDLE handles[32];
+        DWORD count = freerdp_get_event_handles(&client->context->context, handles, 32);
+        
+        if (count == 0) {
+            fprintf(stderr, "No event handles available\n");
+            break;
+        }
+        
+        // Wait for events with a short timeout to allow checking stop_requested
+        DWORD status = WaitForMultipleObjects(count, handles, FALSE, 100); // 100ms timeout
+        
+        if (status == WAIT_FAILED) {
+            fprintf(stderr, "WaitForMultipleObjects failed\n");
+            break;
+        }
+        
+        if (status != WAIT_TIMEOUT) {
+            // Process the event
+            if (!freerdp_check_event_handles(&client->context->context)) {
+                fprintf(stderr, "freerdp_check_event_handles failed\n");
+                break;
+            }
+        }
+    }
+    
+    printf("DEBUG: Event processing thread exiting\n");
+    return NULL;
+}
+
+// Frame buffer management functions
+BOOL copy_frame_buffer(RDPClient* client, BYTE* src_buffer, UINT32 width, UINT32 height, UINT32 stride)
+{
+    if (!client || !src_buffer)
+        return FALSE;
+    
+    pthread_mutex_lock(&client->frame_mutex);
+    
+    // Calculate required buffer size
+    size_t buffer_size = (size_t)height * stride;
+    
+    // Reallocate buffer if size changed
+    if (client->latest_frame_width != width || 
+        client->latest_frame_height != height || 
+        client->latest_frame_stride != stride) {
+        
+        if (client->latest_frame_buffer) {
+            free(client->latest_frame_buffer);
+        }
+        
+        client->latest_frame_buffer = malloc(buffer_size);
+        if (!client->latest_frame_buffer) {
+            pthread_mutex_unlock(&client->frame_mutex);
+            return FALSE;
+        }
+        
+        client->latest_frame_width = width;
+        client->latest_frame_height = height;
+        client->latest_frame_stride = stride;
+    }
+    
+    // Copy the frame data
+    memcpy(client->latest_frame_buffer, src_buffer, buffer_size);
+    client->frame_updated = TRUE;
+    
+    pthread_mutex_unlock(&client->frame_mutex);
+    return TRUE;
+}
+
+BOOL get_latest_frame(RDPClient* client, BYTE** buffer, UINT32* width, UINT32* height, UINT32* stride)
+{
+    if (!client || !buffer || !width || !height || !stride)
+        return FALSE;
+    
+    pthread_mutex_lock(&client->frame_mutex);
+    
+    if (!client->latest_frame_buffer || !client->frame_updated) {
+        pthread_mutex_unlock(&client->frame_mutex);
+        return FALSE;
+    }
+    
+    // Calculate buffer size and make a copy
+    size_t buffer_size = (size_t)client->latest_frame_height * client->latest_frame_stride;
+    *buffer = malloc(buffer_size);
+    if (!*buffer) {
+        pthread_mutex_unlock(&client->frame_mutex);
+        return FALSE;
+    }
+    
+    memcpy(*buffer, client->latest_frame_buffer, buffer_size);
+    *width = client->latest_frame_width;
+    *height = client->latest_frame_height;
+    *stride = client->latest_frame_stride;
+    
+    pthread_mutex_unlock(&client->frame_mutex);
+    return TRUE;
 }
