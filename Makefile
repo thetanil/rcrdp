@@ -66,6 +66,8 @@ test: test-build
 	./test_connection
 
 # Dependencies
-$(BUILDDIR)/main.o: $(INCDIR)/rcrdp.h
+$(BUILDDIR)/main.o: $(INCDIR)/rcrdp.h $(INCDIR)/http_server.h
 $(BUILDDIR)/rdp_client.o: $(INCDIR)/rcrdp.h
 $(BUILDDIR)/commands.o: $(INCDIR)/rcrdp.h
+$(BUILDDIR)/http_server.o: $(INCDIR)/http_server.h $(INCDIR)/rcrdp.h
+$(BUILDDIR)/http_routes.o: $(INCDIR)/http_server.h $(INCDIR)/rcrdp.h
