@@ -93,12 +93,16 @@ static int parse_arguments(int argc, char** argv, Config* config)
             break;
             
         case CMD_SCREENSHOT:
-            if (optind + 1 >= argc)
+            if (optind + 1 < argc && argv[optind + 1][0] != '-')
             {
-                fprintf(stderr, "Error: screenshot command requires output file\n");
-                return -1;
+                // Optional filename provided
+                config->command.params.screenshot.output_file = strdup(argv[optind + 1]);
             }
-            config->command.params.screenshot.output_file = strdup(argv[optind + 1]);
+            else
+            {
+                // No filename provided, will auto-generate
+                config->command.params.screenshot.output_file = NULL;
+            }
             break;
             
         case CMD_SENDKEY:
@@ -244,7 +248,14 @@ int main(int argc, char** argv)
                 goto cleanup;
             }
             
+            // Wait a moment for connection to stabilize
             usleep(1000000);
+            
+            // For screenshot commands, wait longer for desktop to load
+            if (config.command.type == CMD_SCREENSHOT) {
+                printf("Waiting for desktop to load...\n");
+                sleep(8);  // Increased wait time
+            }
             
             ret = execute_command(client, &config);
             

@@ -2,6 +2,9 @@
 build/
 rcrdp
 .env
+
+# Screenshots
+png/
 # Prerequisites
 *.d
 

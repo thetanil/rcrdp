@@ -9,8 +9,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# Find FreeRDP 3.x
+# Find FreeRDP 3.x and PNG
 find_package(PkgConfig REQUIRED)
+find_package(PNG REQUIRED)
 pkg_check_modules(FREERDP REQUIRED freerdp3 freerdp-client3 winpr3)
 
 # Add executable
@@ -29,6 +30,7 @@ target_include_directories(rcrdp PRIVATE
 # Link libraries
 target_link_libraries(rcrdp
     ${FREERDP_LIBRARIES}
+    PNG::PNG
 )
 
 # Compiler flags
@@ -51,6 +53,7 @@ target_include_directories(test_connection PRIVATE
 
 target_link_libraries(test_connection
     ${FREERDP_LIBRARIES}
+    PNG::PNG
 )
 
 target_compile_options(test_connection PRIVATE 

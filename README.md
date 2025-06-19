@@ -7,7 +7,7 @@ A CLI tool built with FreeRDP library for remote desktop automation. Supports sc
 
 - **Core RDP Connection**: Uses FreeRDP 3.x library for establishing RDP connections
 - **CLI Interface**: Full command-line interface with argument parsing
-- **Screenshot Command**: Captures screen and saves as PPM format
+- **Screenshot Command**: Captures screen and saves as PNG format with auto-generated ISO timestamps
 - **SendKey Command**: Uses `freerdp_input_send_keyboard_event` for keyboard input
 - **SendMouse Command**: Uses `freerdp_input_send_mouse_event` for mouse clicks  
 - **MoveMouse Command**: Uses `freerdp_input_send_mouse_event` for mouse movement
@@ -44,7 +44,7 @@ Connection options:
 Commands:
   connect                   Connect to RDP server
   disconnect                Disconnect from RDP server
-  screenshot <file.ppm>     Take screenshot and save as PPM file
+  screenshot [file.png]     Take screenshot and save as PNG file (auto-generated filename if not provided)
   sendkey <flags> <code>    Send keyboard event
                             flags: 1=down, 2=release
                             code: virtual key code
@@ -59,8 +59,11 @@ Commands:
 # Connect to RDP server
 ./build/bin/rcrdp -h 192.168.1.100 -u admin -P password connect
 
-# Take screenshot 
-./build/bin/rcrdp -h 192.168.1.100 -u admin -P password screenshot desktop.ppm
+# Take screenshot with auto-generated filename (saved to png/ directory)
+./build/bin/rcrdp -h 192.168.1.100 -u admin -P password screenshot
+
+# Take screenshot with custom filename 
+./build/bin/rcrdp -h 192.168.1.100 -u admin -P password screenshot desktop.png
 
 # Send keyboard events (press/release 'A' key)
 ./build/bin/rcrdp -h 192.168.1.100 -u admin -P password sendkey 1 65
@@ -104,6 +107,7 @@ The tests will verify:
 ## Dependencies
 
 - FreeRDP 3.x development libraries
-- WinPR 3.x libraries
+- WinPR 3.x libraries  
+- libpng development libraries
 - GCC compiler
 - Make

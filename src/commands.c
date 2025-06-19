@@ -2,12 +2,81 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <sys/stat.h>
 #include <freerdp3/freerdp/input.h>
 #include <freerdp3/freerdp/gdi/gdi.h>
+#include <png.h>
+
+static BOOL write_png_file(const char* filename, BYTE* buffer, UINT32 width, UINT32 height, UINT32 stride)
+{
+    FILE* fp = fopen(filename, "wb");
+    if (!fp)
+    {
+        fprintf(stderr, "Failed to open file %s for writing\n", filename);
+        return FALSE;
+    }
+    
+    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png_ptr)
+    {
+        fclose(fp);
+        return FALSE;
+    }
+    
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    if (!info_ptr)
+    {
+        png_destroy_write_struct(&png_ptr, NULL);
+        fclose(fp);
+        return FALSE;
+    }
+    
+    if (setjmp(png_jmpbuf(png_ptr)))
+    {
+        png_destroy_write_struct(&png_ptr, &info_ptr);
+        fclose(fp);
+        return FALSE;
+    }
+    
+    png_init_io(png_ptr, fp);
+    
+    png_set_IHDR(png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB,
+                 PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    
+    png_write_info(png_ptr, info_ptr);
+    
+    png_bytep* row_pointers = (png_bytep*)malloc(sizeof(png_bytep) * height);
+    for (UINT32 y = 0; y < height; y++)
+    {
+        row_pointers[y] = (png_byte*)malloc(width * 3);
+        BYTE* src_line = buffer + y * stride;
+        
+        for (UINT32 x = 0; x < width; x++)
+        {
+            UINT32 pixel = ((UINT32*)src_line)[x];
+            row_pointers[y][x * 3 + 0] = (pixel >> 16) & 0xFF; // R
+            row_pointers[y][x * 3 + 1] = (pixel >> 8) & 0xFF;  // G
+            row_pointers[y][x * 3 + 2] = pixel & 0xFF;         // B
+        }
+    }
+    
+    png_write_image(png_ptr, row_pointers);
+    png_write_end(png_ptr, NULL);
+    
+    for (UINT32 y = 0; y < height; y++)
+        free(row_pointers[y]);
+    free(row_pointers);
+    
+    png_destroy_write_struct(&png_ptr, &info_ptr);
+    fclose(fp);
+    
+    return TRUE;
+}
 
 BOOL execute_screenshot(RDPClient* client, const char* output_file)
 {
-    if (!client || !client->connected || !output_file)
+    if (!client || !client->connected)
         return FALSE;
         
     rdpGdi* gdi = client->instance->context->gdi;
@@ -17,37 +86,42 @@ BOOL execute_screenshot(RDPClient* client, const char* output_file)
         return FALSE;
     }
     
-    FILE* file = fopen(output_file, "wb");
-    if (!file)
-    {
-        fprintf(stderr, "Failed to open output file: %s\n", output_file);
-        return FALSE;
-    }
-    
     UINT32 width = gdi->width;
     UINT32 height = gdi->height;
     UINT32 stride = gdi->stride;
     BYTE* buffer = gdi->primary_buffer;
     
-    fprintf(file, "P6\n%u %u\n255\n", width, height);
-    
-    for (UINT32 y = 0; y < height; y++)
+    char filename[512];
+    if (output_file)
     {
-        BYTE* line = buffer + y * stride;
-        for (UINT32 x = 0; x < width; x++)
+        // User provided filename
+        strncpy(filename, output_file, sizeof(filename) - 1);
+        filename[sizeof(filename) - 1] = '\0';
+    }
+    else
+    {
+        // Create png directory if it doesn't exist
+        struct stat st = {0};
+        if (stat("png", &st) == -1)
         {
-            UINT32 pixel = ((UINT32*)line)[x];
-            BYTE r = (pixel >> 16) & 0xFF;
-            BYTE g = (pixel >> 8) & 0xFF;
-            BYTE b = pixel & 0xFF;
-            fwrite(&r, 1, 1, file);
-            fwrite(&g, 1, 1, file);
-            fwrite(&b, 1, 1, file);
+            mkdir("png", 0755);
         }
+        
+        // Generate ISO timestamp filename
+        time_t now = time(NULL);
+        struct tm* tm_info = gmtime(&now);
+        snprintf(filename, sizeof(filename), "png/screenshot_%04d-%02d-%02dT%02d:%02d:%02dZ.png",
+                tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+                tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
     }
     
-    fclose(file);
-    printf("Screenshot saved to %s (%ux%u)\n", output_file, width, height);
+    if (!write_png_file(filename, buffer, width, height, stride))
+    {
+        fprintf(stderr, "Failed to write PNG file: %s\n", filename);
+        return FALSE;
+    }
+    
+    printf("Screenshot saved to %s (%ux%u)\n", filename, width, height);
     return TRUE;
 }
 
@@ -141,7 +215,7 @@ void print_usage(void)
     printf("Commands:\n");
     printf("  connect                   Connect to RDP server\n");
     printf("  disconnect                Disconnect from RDP server\n");
-    printf("  screenshot <file.ppm>     Take screenshot and save as PPM file\n");
+    printf("  screenshot [file.png]     Take screenshot and save as PNG file (auto-generated filename if not provided)\n");
     printf("  sendkey <flags> <code>    Send keyboard event\n");
     printf("                            flags: 1=down, 2=release\n");
     printf("                            code: virtual key code\n");
@@ -150,7 +224,7 @@ void print_usage(void)
     printf("  movemouse <x> <y>         Move mouse to coordinates\n\n");
     printf("Examples:\n");
     printf("  rcrdp -h 192.168.1.100 -u admin -P password connect\n");
-    printf("  rcrdp screenshot desktop.ppm\n");
+    printf("  rcrdp screenshot desktop.png\n");
     printf("  rcrdp sendkey 1 65      # Press 'A' key\n");
     printf("  rcrdp sendkey 2 65      # Release 'A' key\n");
     printf("  rcrdp movemouse 100 200\n");
