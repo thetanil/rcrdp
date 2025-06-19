@@ -108,7 +108,7 @@ HttpRequest* parse_http_request(const char* request_data)
     }
     
     char first_line[512];
-    int line_len = line_end - request_data;
+    size_t line_len = (size_t)(line_end - request_data);
     if (line_len >= sizeof(first_line)) {
         free(request);
         return NULL;
@@ -134,7 +134,7 @@ HttpRequest* parse_http_request(const char* request_data)
     const char* headers_end = strstr(request_data, "\r\n\r\n");
     if (headers_end) {
         // Copy headers
-        int headers_len = headers_end - request_data;
+        size_t headers_len = (size_t)(headers_end - request_data);
         if (headers_len < sizeof(request->headers)) {
             strncpy(request->headers, request_data, headers_len);
             request->headers[headers_len] = '\0';
